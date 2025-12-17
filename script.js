@@ -85,70 +85,81 @@ document.addEventListener('DOMContentLoaded', function() {
         }, 3000);
     }
 
-    async function searchByTSCode(tsCode) {
-        if (!tsCode) {
-            showError('Please enter a TS Code');
-            return;
-        }
+async function searchByTSCode(tsCode) {
+    if (!tsCode) {
+        showError('Please enter a TS Code');
+        return;
+    }
 
-        if (!supabase) {
-            showError('Database connection not available. Please refresh the page.');
-            return;
-        }
+    if (!supabase) {
+        showError('Database connection not available. Please refresh the page.');
+        return;
+    }
 
-        showLoading(true);
+    showLoading(true);
 
-        try {
-            // Clean the search term - remove non-alphanumeric and convert to lowercase
-            const searchCode = tsCode.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+    try {
+        // Clean the search term - remove non-alphanumeric and convert to lowercase
+        const searchCode = tsCode.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+        
+        // Query Supabase for ALL matching TS Code records - using tools_alternative table
+        const { data, error } = await supabase
+            .from('tools_alternative')
+            .select('*')
+            .eq('TS Code', searchCode); // Use eq for exact match
             
-            // Query Supabase for EXACT matching TS Code - using tools_alternative table
-            const { data, error } = await supabase
-                .from('tools_alternative')
-                .select('*')
-                .eq('TS Code', searchCode); // Use eq for exact match instead of ilike
-            
-            if (error) {
-                console.error('Supabase error:', error);
-                showError('Failed to search by TS Code.');
-                showLoading(false);
-                return;
-            }
-
+        if (error) {
+            console.error('Supabase error:', error);
+            showError('Failed to search by TS Code.');
             showLoading(false);
+            return;
+        }
 
-            if (data && data.length > 0) {
-                // Extract all tools from the matching rows
-                const matchedTools = [];
-                data.forEach(row => {
-                    if (row['Tool to use']) {
-                        // Parse tools from the Tool to use field
-                        const tools = row['Tool to use'].trim();
-                        if (tools) {
-                            // Split by TT prefix
-                            const toolChunks = tools.split(/(?=TT\d+)/g)
-                                .map(t => t.trim())
-                                .filter(t => t.startsWith('TT'));
-                            
-                            matchedTools.push(...toolChunks);
-                        }
+        showLoading(false);
+
+        if (data && data.length > 0) {
+            // Find the record with the longest "Tool to use" field
+            let longestRecord = null;
+            let maxLength = 0;
+            
+            data.forEach(row => {
+                if (row['Tool to use']) {
+                    const toolUseLength = row['Tool to use'].length;
+                    if (toolUseLength > maxLength) {
+                        maxLength = toolUseLength;
+                        longestRecord = row;
                     }
-                });
-
-                if (matchedTools.length > 0) {
-                    displayTSCodeResults(tsCode, matchedTools);
+                }
+            });
+            
+            // If we found a record with tools
+            if (longestRecord && longestRecord['Tool to use']) {
+                // Parse tools from the Tool to use field
+                const toolsString = longestRecord['Tool to use'].trim();
+                const tools = toolsString.split(/(?=TT\d+)/g)
+                    .map(t => t.trim())
+                    .filter(t => t.startsWith('TT'));
+                
+                // Remove duplicate tools (if any)
+                const uniqueTools = [...new Set(tools)];
+                
+                if (uniqueTools.length > 0) {
+                    displayTSCodeResults(tsCode, uniqueTools);
                 } else {
                     showNoResults();
                 }
             } else {
                 showNoResults();
             }
-        } catch (error) {
-            console.error('Error fetching TS code data:', error);
-            showError('Failed to search by TS Code.');
-            showLoading(false);
+        } else {
+            showNoResults();
         }
+    } catch (error) {
+        console.error('Error fetching TS code data:', error);
+        showError('Failed to search by TS Code.');
+        showLoading(false);
     }
+}
     // Search function
     async function searchTool(toolNumber) {    
         if (!toolNumber) {
