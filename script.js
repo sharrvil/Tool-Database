@@ -2,21 +2,12 @@ document.addEventListener('DOMContentLoaded', function() {
     // Set current year in footer
     document.getElementById('currentYear').textContent = new Date().getFullYear();
     
-    // Supabase configuration
-    const SUPABASE_URL = 'https://cpfksqepjgokzahetstf.supabase.co';
-    const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNwZmtzcWVwamdva3phaGV0c3RmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjU5NDQ0MjcsImV4cCI6MjA4MTUyMDQyN30.wHgc2qHVdSGHitnJkYgnnPu43btZl1jH0HRMhsZzSdY';
+    // Google Sheets ID and sheet name - replace with your actual public Google Sheet details
+    const SHEET_ID = '1ErtscBueM00zoBC49ILYiXtYF76_2MK5L93Qq9evmck';
+    const SHEET_NAME = 'Sheet1';
+    const API_KEY = ''; // Not needed for public sheets
     
-    // Initialize Supabase client - check if supabase is available
-    let supabase;
-    try {
-        supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-        console.log('Supabase client initialized successfully');
-    } catch (error) {
-        console.error('Failed to initialize Supabase client:', error);
-        showError('Failed to initialize database connection. Please refresh the page.');
-        return;
-    }
-    
+    const searchBtn = document.getElementById('searchBtn');
     const searchInput = document.getElementById('searchInput');
     const searchToolBtn = document.getElementById('searchToolBtn');
     const searchTSBtn = document.getElementById('searchTSBtn');
@@ -39,7 +30,6 @@ document.addEventListener('DOMContentLoaded', function() {
             searchTool(searchInput.value.trim()); // Default search by tool number
         }
     });
-    
     function displayTSCodeResults(tsCode, tools) {
         noResults.style.display = 'none';
         resultsTable.style.display = 'block';
@@ -62,7 +52,6 @@ document.addEventListener('DOMContentLoaded', function() {
             }, 100 * index);
         });
     }
-    
     function showError(message) {
         const errorDiv = document.createElement('div');
         errorDiv.className = 'error-message';
@@ -85,128 +74,159 @@ document.addEventListener('DOMContentLoaded', function() {
         }, 3000);
     }
 
-async function searchByTSCode(tsCode) {
-    if (!tsCode) {
-        showError('Please enter a TS Code');
-        return;
-    }
-
-    if (!supabase) {
-        showError('Database connection not available. Please refresh the page.');
-        return;
-    }
-
-    showLoading(true);
-
-    try {
-        // Clean the search term - remove non-alphanumeric and convert to lowercase
-        const searchCode = tsCode.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
-        
-        // Query Supabase for ALL matching TS Code records - using tools_alternative table
-        const { data, error } = await supabase
-            .from('tools_alternative')
-            .select('*')
-            .eq('TS Code', searchCode); // Use eq for exact match
-            
-        if (error) {
-            console.error('Supabase error:', error);
-            showError('Failed to search by TS Code.');
-            showLoading(false);
+    function searchByTSCode(tsCode) {
+        if (!tsCode) {
+            showError('Please enter a TS Code');
             return;
         }
 
-        showLoading(false);
+        showLoading(true);
 
-        if (data && data.length > 0) {
-            // Find the record with the longest "Tool to use" field
-            let longestRecord = null;
-            let maxLength = 0;
-            
-            data.forEach(row => {
-                if (row['Tool to use']) {
-                    const toolUseLength = row['Tool to use'].length;
-                    if (toolUseLength > maxLength) {
-                        maxLength = toolUseLength;
-                        longestRecord = row;
+        const url = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${SHEET_NAME}`;
+
+        fetch(url)
+            .then(response => response.text())
+            .then(csvData => {
+                const rows = csvData.split(/\r?\n/);
+                const headers = rows[0].split(',');
+
+                // Find column indexes
+                const tsCodeIndex = headers.findIndex(h => 
+                    h.trim().replace(/^"|"$/g, '').toLowerCase() === 'ts code'
+                );
+                const toolToUseIndex = headers.findIndex(h => 
+                    h.trim().replace(/^"|"$/g, '').toLowerCase() === 'tool to use'
+                );
+
+                if (tsCodeIndex === -1 || toolToUseIndex === -1) {
+                    showError('Required columns not found.');
+                    showLoading(false);
+                    return;
+                }
+
+                const matchedTools = [];
+
+                for (let i = 1; i < rows.length; i++) {
+                    const row = rows[i];
+                    // Better CSV parsing that handles quoted fields with commas
+                    const rowData = parseCSVRow(row);
+                    
+                    const currentTS = rowData[tsCodeIndex]?.replace(/^"|"$/g, '').trim();
+                    
+                    // Case-insensitive comparison and remove any non-alphanumeric characters
+                    const searchCode = tsCode.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+                    const sheetCode = currentTS?.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+                    
+                    if (sheetCode === searchCode) {
+                        const tools = rowData[toolToUseIndex]?.replace(/^"|"$/g, '').trim();
+                        if (tools) {
+                            // Improved tool splitting that handles various formats
+                            const toolChunks = tools.split(/(?=TT\d+)/g)
+                                .map(t => t.trim())
+                                .filter(t => t.startsWith('TT'));
+                            
+                            matchedTools.push(...toolChunks);
+                        }
                     }
                 }
-            });
-            
-            // If we found a record with tools
-            if (longestRecord && longestRecord['Tool to use']) {
-                // Parse tools from the Tool to use field
-                const toolsString = longestRecord['Tool to use'].trim();
-                const tools = toolsString.split(/(?=TT\d+)/g)
-                    .map(t => t.trim())
-                    .filter(t => t.startsWith('TT'));
-                
-                // Remove duplicate tools (if any)
-                const uniqueTools = [...new Set(tools)];
-                
-                if (uniqueTools.length > 0) {
-                    displayTSCodeResults(tsCode, uniqueTools);
+
+                showLoading(false);
+
+                if (matchedTools.length > 0) {
+                    displayTSCodeResults(tsCode, matchedTools);
                 } else {
                     showNoResults();
                 }
-            } else {
-                showNoResults();
-            }
-        } else {
-            showNoResults();
-        }
-    } catch (error) {
-        console.error('Error fetching TS code data:', error);
-        showError('Failed to search by TS Code.');
-        showLoading(false);
+            })
+            .catch(error => {
+                console.error('Error fetching TS code data:', error);
+                showError('Failed to search by TS Code.');
+                showLoading(false);
+            });
     }
-}
-    // Search function
-    async function searchTool(toolNumber) {    
+
+    // Helper function to properly parse CSV rows that might contain commas within quoted fields
+    function parseCSVRow(row) {
+        const result = [];
+        let current = '';
+        let inQuotes = false;
+
+        for (let i = 0; i < row.length; i++) {
+            const char = row[i];
+            if (char === '"' && row[i + 1] === '"') {
+                current += '"'; // handle escaped quote
+                i++;
+            } else if (char === '"') {
+                inQuotes = !inQuotes;
+            } else if (char === ',' && !inQuotes) {
+                result.push(current);
+                current = '';
+            } else {
+                current += char;
+            }
+        }
+        result.push(current);
+        return result;
+    }
+
+
+// Search function
+    function searchTool(toolNumber) {    
         if (!toolNumber) {
             showError('Please enter a tool number');
             return;
         }
         
-        if (!supabase) {
-            showError('Database connection not available. Please refresh the page.');
-            return;
-        }
-        
         showLoading(true);
-        await fetchToolData(toolNumber);
+        fetchToolData(toolNumber);
     }
     
-    // Fetch data from Supabase
-    async function fetchToolData(toolNumber) {
-        try {
-            // Clean the search term
-            const searchToolNumber = toolNumber.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
-            
-            // Query Supabase for the tool - using tools_alternative table
-            const { data, error } = await supabase
-                .from('tools_alternative') // Changed from 'tools' to 'tools_alternative'
-                .select('*')
-                .or(`"Tool Number".ilike.%${searchToolNumber}%,"Tool Number".ilike.%${toolNumber}%`)
-                .limit(1);
-            
-            if (error) {
-                console.error('Supabase error:', error);
+    // Fetch data from Google Sheets
+    function fetchToolData(toolNumber) {
+        // Public Google Sheets URL (CSV format)
+        const url = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${SHEET_NAME}`;
+        
+        fetch(url)
+            .then(response => response.text())
+            .then(csvData => {
+                processCSVData(csvData, toolNumber);
+            })
+            .catch(error => {
+                console.error('Error fetching data:', error);
                 showError('Failed to fetch tool data. Please try again later.');
                 showLoading(false);
-                return;
+            });
+    }
+    
+    // Process CSV data
+    function processCSVData(csvData, searchToolNumber) {
+        const rows = csvData.split(/\r?\n/);
+        const headers = rows[0].split(',');
+        
+        // Find the tool in the data
+        let toolData = null;
+        
+        for (let i = 1; i < rows.length; i++) {
+            const rowData = rows[i].split(',');
+            if (rowData.length === headers.length) {
+                const toolNumber = rowData[0].replace(/^"|"$/g, ''); // Remove quotes if present
+                if (toolNumber.toLowerCase() === searchToolNumber.toLowerCase()) {
+                    toolData = {};
+                    for (let j = 0; j < headers.length; j++) {
+                        const header = headers[j].replace(/^"|"$/g, '').trim();
+                        toolData[header] = rowData[j].replace(/^"|"$/g, '').trim();
+                    }
+                    break;
+                }
             }
-
-            showLoading(false);
-            
-            if (data && data.length > 0) {
-                displayToolData(data[0]);
-            } else {
-                showNoResults();
-            }
-        } catch (error) {
-            console.error('Error fetching data:', error);
-            showError('Failed to fetch tool data. Please try again later.');
-            showLoading(false);
+        }
+        
+        showLoading(false);
+        
+        if (toolData) {
+            displayToolData(toolData);
+        } else {
+            showNoResults();
         }
     }
     
@@ -215,29 +235,21 @@ async function searchByTSCode(tsCode) {
         noResults.style.display = 'none';
         resultsTable.style.display = 'block';
         
-        // Clear previous results
-        resultsTable.innerHTML = '';
-        
-        // Map Supabase column names to display labels - using tools_alternative column names
-        const fieldMappings = {
-            'Tool Number': 'Tool Number',
-            'Location': 'Location',
-            'Tonnage Required': 'Tonnage Required',
-            'Remarks': 'Remarks',
-            'Tool Type': 'Tool Type',
-            'TS Part Number': 'Parts to Produce', // Changed to match tools_alternative column
-            'Tool Manufacturing Date': 'Tool Manufacturing Date' // Changed to match tools_alternative column
-        };
+        // Clear previous results (except header)
+        resultsTable.innerHTML = ''; // Clear all previous rows
+
         
         // Add tool data rows
-        Object.keys(fieldMappings).forEach(label => {
-            const fieldName = fieldMappings[label];
-            const value = toolData[fieldName] || 'N/A';
-            addTableRow(label, value);
-        });
+        addTableRow('Tool Number', toolData['Tool Number'] || 'N/A');
+        addTableRow('Location', toolData['Location'] || 'N/A');
+        addTableRow('Tonnage Required', toolData['Tonnage Required'] || 'N/A');
+        addTableRow('Remarks', toolData['Remarks'] || 'N/A');
+        addTableRow('Tool Type', toolData['Tool Type'] || 'N/A');
+        addTableRow('TS Part Number', toolData['Parts to Produce'] || 'N/A');
+        addTableRow('Tool Manufacturing Date', toolData['Tool Manufacturing Date'] || 'N/A');
         
         // Animate the results
-        const rows = resultsTable.querySelectorAll('.table-row');
+        const rows = resultsTable.querySelectorAll('.table-row:not(.header)');
         rows.forEach((row, index) => {
             row.style.opacity = '0';
             row.style.transform = 'translateY(10px)';
